@@ -1,2 +1,2 @@
 # trie
-A folk of ethereum MPT
+A fork of ethereum MPT
