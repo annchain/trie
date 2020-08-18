@@ -20,7 +20,7 @@ import (
 	"bytes"
 	"container/heap"
 	"errors"
-	"github.com/annchain/OG/arefactor/og/types"
+	ogTypes "github.com/annchain/OG/og_interface"
 )
 
 // Iterator is a key-value trie iterator that traverses a Trie.
@@ -70,11 +70,11 @@ type NodeIterator interface {
 	Error() error
 
 	// Hash returns the hash of the current node.
-	Hash() types.Hash
+	Hash() ogTypes.Hash
 
 	// Parent returns the hash of the parent of the current node. The hash may be the one
 	// grandparent if the immediate parent is an internal node with no hash.
-	Parent() types.Hash
+	Parent() ogTypes.Hash
 
 	// Path returns the hex-encoded path to the current node.
 	// Callers must not retain references to the return value after calling Next.
@@ -103,11 +103,11 @@ type NodeIterator interface {
 // nodeIteratorState represents the iteration state at one particular node of the
 // trie, which can be resumed at a later invocation.
 type nodeIteratorState struct {
-	hash    types.Hash // Hash of the node being iterated (nil if not standalone)
-	node    Node       // Trie node being iterated
-	parent  types.Hash // Hash of the first full ancestor node (nil if current is the root)
-	index   int        // Child to be processed next
-	pathlen int        // Length of the path to this node
+	hash    ogTypes.Hash // Hash of the node being iterated (nil if not standalone)
+	node    Node         // Trie node being iterated
+	parent  ogTypes.Hash // Hash of the first full ancestor node (nil if current is the root)
+	index   int          // Child to be processed next
+	pathlen int          // Length of the path to this node
 }
 
 type nodeIterator struct {
@@ -139,16 +139,16 @@ func newNodeIterator(trie *Trie, start []byte) NodeIterator {
 	return it
 }
 
-func (it *nodeIterator) Hash() types.Hash {
+func (it *nodeIterator) Hash() ogTypes.Hash {
 	if len(it.stack) == 0 {
-		return types.Hash{}
+		return EmptyHash
 	}
 	return it.stack[len(it.stack)-1].hash
 }
 
-func (it *nodeIterator) Parent() types.Hash {
+func (it *nodeIterator) Parent() ogTypes.Hash {
 	if len(it.stack) == 0 {
-		return types.Hash{}
+		return EmptyHash
 	}
 	return it.stack[len(it.stack)-1].parent
 }
@@ -275,7 +275,7 @@ func (it *nodeIterator) peek(descend bool) (*nodeIteratorState, *int, []byte, er
 	for len(it.stack) > 0 {
 		parent := it.stack[len(it.stack)-1]
 		ancestor := parent.hash
-		if (ancestor == types.Hash{}) {
+		if ancestor.HashKey() == EmptyHash.HashKey() {
 			ancestor = parent.parent
 		}
 		state, path, ok := it.nextChild(parent, ancestor)
@@ -298,12 +298,12 @@ func (st *nodeIteratorState) resolve(tr *Trie, path []byte) error {
 			return err
 		}
 		st.node = resolved
-		st.hash = types.BytesToHash(hash)
+		st.hash = ogTypes.BytesToHash(hash)
 	}
 	return nil
 }
 
-func (it *nodeIterator) nextChild(parent *nodeIteratorState, ancestor types.Hash) (*nodeIteratorState, []byte, bool) {
+func (it *nodeIterator) nextChild(parent *nodeIteratorState, ancestor ogTypes.Hash) (*nodeIteratorState, []byte, bool) {
 	switch node := parent.node.(type) {
 	case *FullNode:
 		// Full node, move to the first non-nil child.
@@ -312,7 +312,7 @@ func (it *nodeIterator) nextChild(parent *nodeIteratorState, ancestor types.Hash
 			if child != nil {
 				hash, _ := child.cache()
 				state := &nodeIteratorState{
-					hash:    types.BytesToHash(hash),
+					hash:    ogTypes.BytesToHash(hash),
 					node:    child,
 					parent:  ancestor,
 					index:   -1,
@@ -328,7 +328,7 @@ func (it *nodeIterator) nextChild(parent *nodeIteratorState, ancestor types.Hash
 		if parent.index < 0 {
 			hash, _ := node.Val.cache()
 			state := &nodeIteratorState{
-				hash:    types.BytesToHash(hash),
+				hash:    ogTypes.BytesToHash(hash),
 				node:    node.Val,
 				parent:  ancestor,
 				index:   -1,
@@ -364,7 +364,7 @@ func compareNodes(a, b NodeIterator) int {
 	} else if b.Leaf() && !a.Leaf() {
 		return 1
 	}
-	if cmp := bytes.Compare(a.Hash().ToBytes(), b.Hash().ToBytes()); cmp != 0 {
+	if cmp := bytes.Compare(a.Hash().Bytes(), b.Hash().Bytes()); cmp != 0 {
 		return cmp
 	}
 	if a.Leaf() && b.Leaf() {
@@ -391,11 +391,11 @@ func NewDifferenceIterator(a, b NodeIterator) (NodeIterator, *int) {
 	return it, &it.count
 }
 
-func (it *differenceIterator) Hash() types.Hash {
+func (it *differenceIterator) Hash() ogTypes.Hash {
 	return it.b.Hash()
 }
 
-func (it *differenceIterator) Parent() types.Hash {
+func (it *differenceIterator) Parent() ogTypes.Hash {
 	return it.b.Parent()
 }
 
@@ -447,7 +447,7 @@ func (it *differenceIterator) Next(bool) bool {
 			return true
 		case 0:
 			// a and b are identical; skip this whole subtree if the nodes have hashes
-			hasHash := it.a.Hash() == types.Hash{}
+			hasHash := it.a.Hash().HashKey() == EmptyHash.HashKey()
 			if !it.b.Next(hasHash) {
 				return false
 			}
@@ -498,11 +498,11 @@ func NewUnionIterator(iters []NodeIterator) (NodeIterator, *int) {
 	return ui, &ui.count
 }
 
-func (it *unionIterator) Hash() types.Hash {
+func (it *unionIterator) Hash() ogTypes.Hash {
 	return (*it.items)[0].Hash()
 }
 
-func (it *unionIterator) Parent() types.Hash {
+func (it *unionIterator) Parent() ogTypes.Hash {
 	return (*it.items)[0].Parent()
 }
 
@@ -553,7 +553,7 @@ func (it *unionIterator) Next(descend bool) bool {
 	for len(*it.items) > 0 && ((!descend && bytes.HasPrefix((*it.items)[0].Path(), least.Path())) || compareNodes(least, (*it.items)[0]) == 0) {
 		skipped := heap.Pop(it.items).(NodeIterator)
 		// Skip the whole subtree if the nodes have hashes; otherwise just skip this node
-		if skipped.Next(skipped.Hash() == types.Hash{}) {
+		if skipped.Next(skipped.Hash().HashKey() == EmptyHash.HashKey()) {
 			it.count++
 			// If there are more elements, push the iterator back on the heap
 			heap.Push(it.items, skipped)

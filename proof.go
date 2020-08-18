@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"github.com/annchain/OG/arefactor/og/types"
 	ogcrypto2 "github.com/annchain/OG/deprecated/ogcrypto"
-	"github.com/annchain/OG/ogdb"
+	"github.com/annchain/ogdb"
 	log "github.com/sirupsen/logrus"
 )
 

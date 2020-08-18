@@ -17,11 +17,11 @@
 package trie
 
 import (
-	"github.com/annchain/OG/arefactor/og/types"
 	"hash"
 	"sync"
 
-	"github.com/annchain/OG/common"
+	ogTypes "github.com/annchain/OG/og_interface"
+	"github.com/annchain/commongo/bytes"
 	"golang.org/x/crypto/sha3"
 	//log "github.com/sirupsen/logrus"
 )
@@ -75,7 +75,7 @@ func returnHasherToPool(h *hasher) {
 
 // hash collapses a node down into a hash node, also returning a copy of the
 // original node initialized with the computed hash to replace the original one.
-func (h *hasher) hash(n Node, db *Database, force bool, preHash bool) (Node, Node, error) {
+func (h *hasher) hash(n Node, db *TrieDatabase, force bool, preHash bool) (Node, Node, error) {
 
 	//log.Tracef("Panic debug, start hash node: %s", n.String())
 
@@ -128,7 +128,7 @@ func (h *hasher) hash(n Node, db *Database, force bool, preHash bool) (Node, Nod
 // hashChildren replaces the children of a node with their hashes if the encoded
 // size of the child is larger than a hash, returning the collapsed node as well
 // as a replacement for the original node with the child hashes cached in.
-func (h *hasher) hashChildren(original Node, db *Database, preHash bool) (Node, Node, error) {
+func (h *hasher) hashChildren(original Node, db *TrieDatabase, preHash bool) (Node, Node, error) {
 	var err error
 
 	switch n := original.(type) {
@@ -136,7 +136,7 @@ func (h *hasher) hashChildren(original Node, db *Database, preHash bool) (Node, 
 		// Hash the short node's child, caching the newly hashed subtree
 		collapsed, cached := n.copy(), n.copy()
 		collapsed.Key = hexToCompact(n.Key)
-		cached.Key = common.CopyBytes(n.Key)
+		cached.Key = bytes.CopyBytes(n.Key)
 
 		if _, ok := n.Val.(ValueNode); !ok {
 			collapsed.Val, cached.Val, err = h.hash(n.Val, db, false, preHash)
@@ -185,7 +185,7 @@ func (h *hasher) hashChildren(original Node, db *Database, preHash bool) (Node, 
 // store hashes the node n and if we have a storage layer specified, it writes
 // the key/value pair to it and tracks any node->child references as well as any
 // node->external trie references.
-func (h *hasher) store(n Node, db *Database, force bool, preHash bool) (Node, error) {
+func (h *hasher) store(n Node, db *TrieDatabase, force bool, preHash bool) (Node, error) {
 	// Don't store hashes or empty nodes.
 	if _, isHash := n.(HashNode); n == nil || isHash {
 		return n, nil
@@ -206,18 +206,18 @@ func (h *hasher) store(n Node, db *Database, force bool, preHash bool) (Node, er
 	if db != nil && !preHash {
 		// We are pooling the trie nodes into an intermediate memory cache
 		db.lock.Lock()
-		hash := types.BytesToHash(hash)
+		hash := ogTypes.BytesToHash(hash)
 		db.insert(hash, h.tmp)
 		// Track all direct parent->child node references
 		switch n := n.(type) {
 		case *ShortNode:
 			if child, ok := n.Val.(HashNode); ok {
-				db.reference(types.BytesToHash(child), hash)
+				db.reference(ogTypes.BytesToHash(child), hash)
 			}
 		case *FullNode:
 			for i := 0; i < 16; i++ {
 				if child, ok := n.Children[i].(HashNode); ok {
-					db.reference(types.BytesToHash(child), hash)
+					db.reference(ogTypes.BytesToHash(child), hash)
 				}
 			}
 		}

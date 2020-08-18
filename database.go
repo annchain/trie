@@ -17,19 +17,20 @@
 package trie
 
 import (
-	ogTypes "github.com/annchain/OG/og_interface"
-	//"github.com/annchain/OG/vm/types"
 	"sync"
 	"time"
 
-	"github.com/annchain/OG/common"
+	ogTypes "github.com/annchain/OG/og_interface"
+	"github.com/annchain/commongo/bytes"
 	"github.com/annchain/commongo/utils"
+	"github.com/annchain/ogdb"
 	"github.com/annchain/ogdb/leveldb/metrics"
-	"github.com/annchain/OG/arefactor/og/core/ogdb"
 	log "github.com/sirupsen/logrus"
 )
 
 var (
+	EmptyHash = ogTypes.EmptyHash
+
 	memcacheFlushTimeTimer  = metrics.NewRegisteredResettingTimer("trie/memcache/flush/time", nil)
 	memcacheFlushNodesMeter = metrics.NewRegisteredMeter("trie/memcache/flush/nodes", nil)
 	memcacheFlushSizeMeter  = metrics.NewRegisteredMeter("trie/memcache/flush/size", nil)
@@ -61,22 +62,22 @@ type DatabaseReader interface {
 // Database is an intermediate write layer between the trie data structures and
 // the disk database. The aim is to accumulate trie writes in-memory and only
 // periodically flush a couple tries to disk, garbage collecting the remainder.
-type Database struct {
+type TrieDatabase struct {
 	diskdb ogdb.Database // Persistent storage for matured trie nodes
 
-	nodes  map[types.Hash]*cachedNode // Data and references relationships of a node
-	oldest types.Hash                 // Oldest tracked node, flush-list head
-	newest types.Hash                 // Newest tracked node, flush-list tail
+	nodes  map[ogTypes.HashKey]*cachedNode // Data and references relationships of a node
+	oldest ogTypes.Hash                    // Oldest tracked node, flush-list head
+	newest ogTypes.Hash                    // Newest tracked node, flush-list tail
 
-	preimages map[types.Hash][]byte // Preimages of nodes from the secure trie
-	seckeybuf [secureKeyLength]byte // Ephemeral buffer for calculating preimage keys
+	preimages map[ogTypes.HashKey][]byte // Preimages of nodes from the secure trie
+	seckeybuf [secureKeyLength]byte      // Ephemeral buffer for calculating preimage keys
 
-	gctime  time.Duration      // Time spent on garbage collection since last commit
-	gcnodes uint64             // Nodes garbage collected since last commit
+	gctime  time.Duration     // Time spent on garbage collection since last commit
+	gcnodes uint64            // Nodes garbage collected since last commit
 	gcsize  utils.StorageSize // Data storage garbage collected since last commit
 
-	flushtime  time.Duration      // Time spent on data flushing since last commit
-	flushnodes uint64             // Nodes flushed since last commit
+	flushtime  time.Duration     // Time spent on data flushing since last commit
+	flushnodes uint64            // Nodes flushed since last commit
 	flushsize  utils.StorageSize // Data storage flushed since last commit
 
 	nodesSize     utils.StorageSize // Storage size of the nodes cache (exc. flushlist)
@@ -88,34 +89,34 @@ type Database struct {
 // cachedNode is all the information we know about a single cached node in the
 // memory database write layer.
 type cachedNode struct {
-	blob     []byte             // Cached data block of the trie node
-	parents  int                // Number of live nodes referencing this one
-	children map[types.Hash]int // Children referenced by this nodes
+	blob     []byte                  // Cached data block of the trie node
+	parents  int                     // Number of live nodes referencing this one
+	children map[ogTypes.HashKey]int // Children referenced by this nodes
 
-	flushPrev types.Hash // Previous node in the flush-list
-	flushNext types.Hash // Next node in the flush-list
+	flushPrev ogTypes.Hash // Previous node in the flush-list
+	flushNext ogTypes.Hash // Next node in the flush-list
 }
 
 // NewDatabase creates a new trie database to store ephemeral trie content before
 // its written out to disk or garbage collected.
-func NewDatabase(diskdb ogdb.Database) *Database {
-	return &Database{
+func NewTrieDatabase(diskdb ogdb.Database) *TrieDatabase {
+	return &TrieDatabase{
 		diskdb: diskdb,
-		nodes: map[types.Hash]*cachedNode{
-			{}: {children: make(map[types.Hash]int)},
+		nodes: map[ogTypes.HashKey]*cachedNode{
+			EmptyHash.HashKey(): {children: make(map[ogTypes.HashKey]int)},
 		},
-		preimages: make(map[types.Hash][]byte),
+		preimages: make(map[ogTypes.HashKey][]byte),
 	}
 }
 
 // DiskDB retrieves the persistent storage backing the trie database.
-func (db *Database) DiskDB() DatabaseReader {
+func (db *TrieDatabase) DiskDB() DatabaseReader {
 	return db.diskdb
 }
 
 // Insert writes a new trie node to the memory database if it's yet unknown. The
 // method will make a copy of the slice.
-func (db *Database) Insert(hash types.Hash, blob []byte) {
+func (db *TrieDatabase) Insert(hash ogTypes.Hash, blob []byte) {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
@@ -123,73 +124,73 @@ func (db *Database) Insert(hash types.Hash, blob []byte) {
 }
 
 // insert is the private locked version of Insert.
-func (db *Database) insert(hash types.Hash, blob []byte) {
+func (db *TrieDatabase) insert(hash ogTypes.Hash, blob []byte) {
 	// If the node's already cached, skip
-	if _, ok := db.nodes[hash]; ok {
+	if _, ok := db.nodes[hash.HashKey()]; ok {
 		return
 	}
-	db.nodes[hash] = &cachedNode{
-		blob:      common.CopyBytes(blob),
-		children:  make(map[types.Hash]int),
+	db.nodes[hash.HashKey()] = &cachedNode{
+		blob:      bytes.CopyBytes(blob),
+		children:  make(map[ogTypes.HashKey]int),
 		flushPrev: db.newest,
 	}
 	// Update the flush-list endpoints
 	//log.Tracef("Panic debug, insert hash: %x, db.oldest: %x", hash.KeyBytes, db.oldest.KeyBytes)
-	if db.oldest == (types.Hash{}) {
+	if db.oldest.HashKey() == EmptyHash.HashKey() {
 		db.oldest, db.newest = hash, hash
 	} else {
 		//log.Tracef("Panic debug, insert hash: %x, get db.newest: %x", hash.KeyBytes, db.newest.KeyBytes)
-		db.nodes[db.newest].flushNext, db.newest = hash, hash
+		db.nodes[db.newest.HashKey()].flushNext, db.newest = hash, hash
 	}
-	db.nodesSize += utils.StorageSize(types.HashLength + len(blob))
+	db.nodesSize += utils.StorageSize(len(hash.Bytes()) + len(blob))
 }
 
 // insertPreimage writes a new trie node pre-image to the memory database if it's
 // yet unknown. The method will make a copy of the slice.
 //
 // Note, this method assumes that the database's lock is held!
-func (db *Database) insertPreimage(hash types.Hash, preimage []byte) {
-	if _, ok := db.preimages[hash]; ok {
+func (db *TrieDatabase) insertPreimage(hash ogTypes.Hash, preimage []byte) {
+	if _, ok := db.preimages[hash.HashKey()]; ok {
 		return
 	}
-	db.preimages[hash] = common.CopyBytes(preimage)
-	db.preimagesSize += utils.StorageSize(types.HashLength + len(preimage))
+	db.preimages[hash.HashKey()] = bytes.CopyBytes(preimage)
+	db.preimagesSize += utils.StorageSize(len(hash.Bytes()) + len(preimage))
 }
 
 // Node retrieves a cached trie node from memory. If it cannot be found cached,
 // the method queries the persistent database for the content.
-func (db *Database) Node(hash types.Hash) ([]byte, error) {
+func (db *TrieDatabase) Node(hash ogTypes.Hash) ([]byte, error) {
 	// Retrieve the node from cache if available
 	db.lock.RLock()
-	node := db.nodes[hash]
+	node := db.nodes[hash.HashKey()]
 	db.lock.RUnlock()
 
 	if node != nil {
 		return node.blob, nil
 	}
 	// Content unavailable in memory, attempt to retrieve from disk
-	return db.diskdb.Get(hash.ToBytes())
+	return db.diskdb.Get(hash.Bytes())
 }
 
 // preimage retrieves a cached trie node pre-image from memory. If it cannot be
 // found cached, the method queries the persistent database for the content.
-func (db *Database) preimage(hash types.Hash) ([]byte, error) {
+func (db *TrieDatabase) preimage(hash ogTypes.Hash) ([]byte, error) {
 	// Retrieve the node from cache if available
 	db.lock.RLock()
-	preimage := db.preimages[hash]
+	preimage := db.preimages[hash.HashKey()]
 	db.lock.RUnlock()
 
 	if preimage != nil {
 		return preimage, nil
 	}
 	// Content unavailable in memory, attempt to retrieve from disk
-	return db.diskdb.Get(db.secureKey(hash.ToBytes()))
+	return db.diskdb.Get(db.secureKey(hash.Bytes()))
 }
 
 // secureKey returns the database key for the preimage of key, as an ephemeral
 // buffer. The caller must not hold onto the return value because it will become
 // invalid on the next call.
-func (db *Database) secureKey(key []byte) []byte {
+func (db *TrieDatabase) secureKey(key []byte) []byte {
 	buf := append(db.seckeybuf[:0], secureKeyPrefix...)
 	buf = append(buf, key...)
 	return buf
@@ -198,21 +199,21 @@ func (db *Database) secureKey(key []byte) []byte {
 // Nodes retrieves the hashes of all the nodes cached within the memory database.
 // This method is extremely expensive and should only be used to validate internal
 // states in test code.
-func (db *Database) Nodes() types.Hashes {
+func (db *TrieDatabase) Nodes() []ogTypes.Hash {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
-	var hashes = make(types.Hashes, 0, len(db.nodes))
-	for hash := range db.nodes {
-		if hash != (types.Hash{}) { // Special case for "root" references/nodes
-			hashes = append(hashes, hash)
+	var hashes = make([]ogTypes.Hash, 0, len(db.nodes))
+	for hashKey := range db.nodes {
+		if hashKey != EmptyHash.HashKey() { // Special case for "root" references/nodes
+			hashes = append(hashes, ogTypes.HashKeyToHash(hashKey))
 		}
 	}
 	return hashes
 }
 
 // Reference adds a new reference from a parent node to a child node.
-func (db *Database) Reference(child types.Hash, parent types.Hash) {
+func (db *TrieDatabase) Reference(child ogTypes.Hash, parent ogTypes.Hash) {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
@@ -220,27 +221,27 @@ func (db *Database) Reference(child types.Hash, parent types.Hash) {
 }
 
 // reference is the private locked version of Reference.
-func (db *Database) reference(child types.Hash, parent types.Hash) {
+func (db *TrieDatabase) reference(child ogTypes.Hash, parent ogTypes.Hash) {
 	// If the node does not exist, it's a node pulled from disk, skip
-	node, ok := db.nodes[child]
+	node, ok := db.nodes[child.HashKey()]
 	if !ok {
 		return
 	}
 	// If the reference already exists, only duplicate for roots
-	if _, ok = db.nodes[parent].children[child]; ok && parent != (types.Hash{}) {
+	if _, ok = db.nodes[parent.HashKey()].children[child.HashKey()]; ok && parent.HashKey() != EmptyHash.HashKey() {
 		return
 	}
 	node.parents++
-	db.nodes[parent].children[child]++
+	db.nodes[parent.HashKey()].children[child.HashKey()]++
 }
 
 // Dereference removes an existing reference from a parent node to a child node.
-func (db *Database) Dereference(child types.Hash, parent types.Hash) {
+func (db *TrieDatabase) Dereference(child ogTypes.Hash, parent ogTypes.Hash) {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
 	nodes, storage, start := len(db.nodes), db.nodesSize, time.Now()
-	db.dereference(child, parent)
+	db.dereference(child.HashKey(), parent.HashKey())
 
 	db.gcnodes += uint64(nodes - len(db.nodes))
 	db.gcsize += storage - db.nodesSize
@@ -255,16 +256,16 @@ func (db *Database) Dereference(child types.Hash, parent types.Hash) {
 }
 
 // dereference is the private locked version of Dereference.
-func (db *Database) dereference(child types.Hash, parent types.Hash) {
+func (db *TrieDatabase) dereference(childKey ogTypes.HashKey, parentKey ogTypes.HashKey) {
 	// Dereference the parent-child
-	node := db.nodes[parent]
+	node := db.nodes[parentKey]
 
-	node.children[child]--
-	if node.children[child] == 0 {
-		delete(node.children, child)
+	node.children[childKey]--
+	if node.children[childKey] == 0 {
+		delete(node.children, childKey)
 	}
 	// If the child does not exist, it's a previously committed node.
-	node, ok := db.nodes[child]
+	node, ok := db.nodes[childKey]
 	if !ok {
 		return
 	}
@@ -272,24 +273,24 @@ func (db *Database) dereference(child types.Hash, parent types.Hash) {
 	node.parents--
 	if node.parents == 0 {
 		// Remove the node from the flush-list
-		if child == db.oldest {
+		if childKey == db.oldest.HashKey() {
 			db.oldest = node.flushNext
 		} else {
-			db.nodes[node.flushPrev].flushNext = node.flushNext
-			db.nodes[node.flushNext].flushPrev = node.flushPrev
+			db.nodes[node.flushPrev.HashKey()].flushNext = node.flushNext
+			db.nodes[node.flushNext.HashKey()].flushPrev = node.flushPrev
 		}
 		// Dereference all children and delete the node
-		for hash := range node.children {
-			db.dereference(hash, child)
+		for hashKey := range node.children {
+			db.dereference(hashKey, childKey)
 		}
-		delete(db.nodes, child)
-		db.nodesSize -= utils.StorageSize(types.HashLength + len(node.blob))
+		delete(db.nodes, childKey)
+		db.nodesSize -= utils.StorageSize(len(childKey.Bytes()) + len(node.blob))
 	}
 }
 
 // Cap iteratively flushes old but still referenced trie nodes until the total
 // memory usage goes below the given threshold.
-func (db *Database) Cap(limit utils.StorageSize) error {
+func (db *TrieDatabase) Cap(limit utils.StorageSize) error {
 	// Create a database batch to flush persistent data out. It is important that
 	// outside code doesn't see an inconsistent state (referenced data removed from
 	// memory cache during commit but not yet in persistent storage). This is ensured
@@ -302,14 +303,19 @@ func (db *Database) Cap(limit utils.StorageSize) error {
 	// db.nodesSize only contains the useful data in the cache, but when reporting
 	// the total memory consumption, the maintenance metadata is also needed to be
 	// counted. For every useful node, we track 2 extra hashes as the flushlist.
-	size := db.nodesSize + utils.StorageSize((len(db.nodes)-1)*2*types.HashLength)
+	nodesHashKeySize := 0
+	for hashKey := range db.nodes {
+		nodesHashKeySize += len(hashKey.Bytes())
+	}
+	nodesHashKeySize *= 2
+	size := db.nodesSize + utils.StorageSize(nodesHashKeySize)
 
 	// If the preimage cache got large enough, push to disk. If it's still small
 	// leave for later to deduplicate writes.
 	flushPreimages := db.preimagesSize > 4*1024*1024
 	if flushPreimages {
-		for hash, preimage := range db.preimages {
-			if err := batch.Put(db.secureKey(hash.ToBytes()), preimage); err != nil {
+		for hashKey, preimage := range db.preimages {
+			if err := batch.Put(db.secureKey(hashKey.Bytes()), preimage); err != nil {
 				log.Error("Failed to commit preimage from trie database", "err", err)
 				db.lock.RUnlock()
 				return err
@@ -325,10 +331,10 @@ func (db *Database) Cap(limit utils.StorageSize) error {
 	}
 	// Keep committing nodes from the flush-list until we're below allowance
 	oldest := db.oldest
-	for size > limit && oldest != (types.Hash{}) {
+	for size > limit && oldest.HashKey() != EmptyHash.HashKey() {
 		// Fetch the oldest referenced node and push into the batch
-		node := db.nodes[oldest]
-		if err := batch.Put(oldest.ToBytes(), node.blob); err != nil {
+		node := db.nodes[oldest.HashKey()]
+		if err := batch.Put(oldest.Bytes(), node.blob); err != nil {
 			db.lock.RUnlock()
 			return err
 		}
@@ -345,7 +351,7 @@ func (db *Database) Cap(limit utils.StorageSize) error {
 		// is the total size, including both the useful cached data (hash -> blob), as
 		// well as the flushlist metadata (2*hash). When flushing items from the cache,
 		// we need to reduce both.
-		size -= utils.StorageSize(3*types.HashLength + len(node.blob))
+		size -= utils.StorageSize(3*len(oldest.Bytes()) + len(node.blob))
 		oldest = node.flushNext
 	}
 	// Flush out any remainder data from the last batch
@@ -361,18 +367,17 @@ func (db *Database) Cap(limit utils.StorageSize) error {
 	defer db.lock.Unlock()
 
 	if flushPreimages {
-		db.preimages = make(map[types.Hash][]byte)
+		db.preimages = make(map[ogTypes.HashKey][]byte)
 		db.preimagesSize = 0
 	}
 	for db.oldest != oldest {
-		node := db.nodes[db.oldest]
-		delete(db.nodes, db.oldest)
+		node := db.nodes[db.oldest.HashKey()]
+		delete(db.nodes, db.oldest.HashKey())
+		db.nodesSize -= utils.StorageSize(len(db.oldest.Bytes()) + len(node.blob))
 		db.oldest = node.flushNext
-
-		db.nodesSize -= utils.StorageSize(types.HashLength + len(node.blob))
 	}
-	if db.oldest != (types.Hash{}) {
-		db.nodes[db.oldest].flushPrev = types.Hash{}
+	if db.oldest.HashKey() != EmptyHash.HashKey() {
+		db.nodes[db.oldest.HashKey()].flushPrev = &ogTypes.Hash32{}
 	}
 	db.flushnodes += uint64(nodes - len(db.nodes))
 	db.flushsize += storage - db.nodesSize
@@ -392,7 +397,7 @@ func (db *Database) Cap(limit utils.StorageSize) error {
 // to disk, forcefully tearing down all references in both directions.
 //
 // As a side effect, all pre-images accumulated up to this point are also written.
-func (db *Database) Commit(node types.Hash, report bool) error {
+func (db *TrieDatabase) Commit(node ogTypes.Hash, report bool) error {
 	// Create a database batch to flush persistent data out. It is important that
 	// outside code doesn't see an inconsistent state (referenced data removed from
 	// memory cache during commit but not yet in persistent storage). This is ensured
@@ -403,8 +408,8 @@ func (db *Database) Commit(node types.Hash, report bool) error {
 	batch := db.diskdb.NewBatch()
 
 	// Move all of the accumulated preimages into a write batch
-	for hash, preimage := range db.preimages {
-		if err := batch.Put(db.secureKey(hash.ToBytes()), preimage); err != nil {
+	for hashKey, preimage := range db.preimages {
+		if err := batch.Put(db.secureKey(hashKey.Bytes()), preimage); err != nil {
 			log.Error("Failed to commit preimage from trie database", "err", err)
 			db.lock.RUnlock()
 			return err
@@ -418,7 +423,7 @@ func (db *Database) Commit(node types.Hash, report bool) error {
 	}
 	// Move the trie itself into the batch, flushing if enough data is accumulated
 	nodes, storage := len(db.nodes), db.nodesSize
-	if err := db.commit(node, batch); err != nil {
+	if err := db.commit(node.HashKey(), batch); err != nil {
 		log.Error("Failed to commit trie from trie database", "err", err)
 		db.lock.RUnlock()
 		return err
@@ -435,10 +440,10 @@ func (db *Database) Commit(node types.Hash, report bool) error {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
-	db.preimages = make(map[types.Hash][]byte)
+	db.preimages = make(map[ogTypes.HashKey][]byte)
 	db.preimagesSize = 0
 
-	db.uncache(node)
+	db.uncache(node.HashKey())
 
 	memcacheCommitTimeTimer.Update(time.Since(start))
 	memcacheCommitSizeMeter.Mark(int64(storage - db.nodesSize))
@@ -459,18 +464,18 @@ func (db *Database) Commit(node types.Hash, report bool) error {
 }
 
 // commit is the private locked version of Commit.
-func (db *Database) commit(hash types.Hash, batch ogdb.Batch) error {
+func (db *TrieDatabase) commit(hashKey ogTypes.HashKey, batch ogdb.Batch) error {
 	// If the node does not exist, it's a previously committed node
-	node, ok := db.nodes[hash]
+	node, ok := db.nodes[hashKey]
 	if !ok {
 		return nil
 	}
-	for child := range node.children {
-		if err := db.commit(child, batch); err != nil {
+	for childKey := range node.children {
+		if err := db.commit(childKey, batch); err != nil {
 			return err
 		}
 	}
-	if err := batch.Put(hash.ToBytes(), node.blob); err != nil {
+	if err := batch.Put(hashKey.Bytes(), node.blob); err != nil {
 		return err
 	}
 	// If we've reached an optimal batch size, commit and start over
@@ -487,40 +492,45 @@ func (db *Database) commit(hash types.Hash, batch ogdb.Batch) error {
 // persisted trie is removed from the cache. The reason behind the two-phase
 // commit is to ensure consistent data availability while moving from memory
 // to disk.
-func (db *Database) uncache(hash types.Hash) {
+func (db *TrieDatabase) uncache(hashKey ogTypes.HashKey) {
 
 	//log.Tracef("Panic debug, uncache the node: %x, cur db.oldest: %x", hash.KeyBytes, db.oldest.KeyBytes)
 	// If the node does not exist, we're done on this path
-	node, ok := db.nodes[hash]
+	node, ok := db.nodes[hashKey]
 	if !ok {
 		return
 	}
 	// Node still exists, remove it from the flush-list
-	if hash == db.oldest {
+	if hashKey == db.oldest.HashKey() {
 		//log.Tracef("Panic debug, uncache the node: %x, set oldest to: %x", hash.KeyBytes, node.flushNext.KeyBytes)
 		db.oldest = node.flushNext
 	} else {
 		//log.Tracef("Panic debug, uncache the node: %x, delete node between next: %x, prev: %x", hash.KeyBytes, node.flushNext.KeyBytes, node.flushPrev.KeyBytes)
-		db.nodes[node.flushPrev].flushNext = node.flushNext
-		db.nodes[node.flushNext].flushPrev = node.flushPrev
+		db.nodes[node.flushPrev.HashKey()].flushNext = node.flushNext
+		db.nodes[node.flushNext.HashKey()].flushPrev = node.flushPrev
 	}
 	// Uncache the node's subtries and remove the node itself too
-	for child := range node.children {
-		db.uncache(child)
+	for childKey := range node.children {
+		db.uncache(childKey)
 	}
-	delete(db.nodes, hash)
-	db.nodesSize -= utils.StorageSize(types.HashLength + len(node.blob))
+	delete(db.nodes, hashKey)
+	db.nodesSize -= utils.StorageSize(len(hashKey.Bytes()) + len(node.blob))
 }
 
 // Size returns the current storage size of the memory cache in front of the
 // persistent database layer.
-func (db *Database) Size() (utils.StorageSize, utils.StorageSize) {
+func (db *TrieDatabase) Size() (utils.StorageSize, utils.StorageSize) {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
 	// db.nodesSize only contains the useful data in the cache, but when reporting
 	// the total memory consumption, the maintenance metadata is also needed to be
 	// counted. For every useful node, we track 2 extra hashes as the flushlist.
-	var flushlistSize = utils.StorageSize((len(db.nodes) - 1) * 2 * types.HashLength)
-	return db.nodesSize + flushlistSize, db.preimagesSize
+	flushListSize := 0
+	for hashKey := range db.nodes {
+		flushListSize += len(hashKey.Bytes())
+	}
+	flushListSize *= 2
+
+	return db.nodesSize + utils.StorageSize(flushListSize), db.preimagesSize
 }

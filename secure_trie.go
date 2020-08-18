@@ -18,7 +18,7 @@ package trie
 
 import (
 	"fmt"
-	ogtypes "github.com/annchain/OG/arefactor/og_interface"
+	ogTypes "github.com/annchain/OG/og_interface"
 
 	"github.com/annchain/OG/arefactor/common"
 	log "github.com/sirupsen/logrus"
@@ -38,7 +38,7 @@ import (
 // SecureTrie is not safe for concurrent use.
 type SecureTrie struct {
 	trie             Trie
-	hashKeyBuf       [ogtypes.Hash32Length]byte
+	hashKeyBuf       [ogTypes.Hash32Length]byte
 	secKeyCache      map[string][]byte
 	secKeyCacheOwner *SecureTrie // Pointer to self, replace the key cache on mismatch
 }
@@ -54,7 +54,7 @@ type SecureTrie struct {
 // Loaded nodes are kept around until their 'cache generation' expires.
 // A new cache generation is created by each call to Commit.
 // cachelimit sets the number of past cache generations to keep.
-func NewSecure(root ogtypes.Hash, db *Database, cachelimit uint16) (*SecureTrie, error) {
+func NewSecure(root ogTypes.Hash, db *TrieDatabase, cachelimit uint16) (*SecureTrie, error) {
 	if db == nil {
 		panic("trie.NewSecure called without a database")
 	}
@@ -136,7 +136,7 @@ func (t *SecureTrie) GetKey(shaKey []byte) []byte {
 	if key, ok := t.getSecKeyCache()[string(shaKey)]; ok {
 		return key
 	}
-	key, _ := t.trie.db.preimage(ogtypes.BytesToHash32(shaKey))
+	key, _ := t.trie.db.preimage(ogTypes.BytesToHash32(shaKey))
 	return key
 }
 
@@ -145,12 +145,12 @@ func (t *SecureTrie) GetKey(shaKey []byte) []byte {
 //
 // Committing flushes nodes from memory. Subsequent Get calls will load nodes
 // from the database.
-func (t *SecureTrie) Commit(onleaf LeafCallback, preCommit bool) (root ogtypes.Hash, err error) {
+func (t *SecureTrie) Commit(onleaf LeafCallback, preCommit bool) (root ogTypes.Hash, err error) {
 	// Write all the pre-images to the actual disk database
 	if len(t.getSecKeyCache()) > 0 {
 		t.trie.db.lock.Lock()
 		for hk, key := range t.secKeyCache {
-			t.trie.db.insertPreimage(ogtypes.BytesToHash32([]byte(hk)), key)
+			t.trie.db.insertPreimage(ogTypes.BytesToHash32([]byte(hk)), key)
 		}
 		t.trie.db.lock.Unlock()
 
@@ -162,7 +162,7 @@ func (t *SecureTrie) Commit(onleaf LeafCallback, preCommit bool) (root ogtypes.H
 
 // Hash returns the root hash of SecureTrie. It does not write to the
 // database and can be used even if the trie doesn't have one.
-func (t *SecureTrie) Hash() ogtypes.Hash {
+func (t *SecureTrie) Hash() ogTypes.Hash {
 	return t.trie.Hash()
 }
 
