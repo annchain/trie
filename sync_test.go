@@ -19,16 +19,17 @@ package trie
 import (
 	"bytes"
 	"github.com/annchain/OG/arefactor/og/types"
+	"github.com/annchain/OG/ogdb"
 	"testing"
 
 	"github.com/annchain/OG/common"
-	"github.com/annchain/OG/ogdb"
+	"github.com/annchain/ogdb/memdb"
 )
 
 // makeTestTrie create a sample test trie to test node-wise reconstruction.
 func makeTestTrie() (*Database, *Trie, map[string][]byte) {
 	// Create an empty trie
-	triedb := NewDatabase(ogdb.NewMemDatabase())
+	triedb := NewDatabase(memdb.NewMemDatabase())
 	trie, _ := New(types.Hash{}, triedb)
 
 	// Fill it with some arbitrary data

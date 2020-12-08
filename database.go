@@ -99,7 +99,7 @@ type cachedNode struct {
 
 // NewDatabase creates a new trie database to store ephemeral trie content before
 // its written out to disk or garbage collected.
-func NewTrieDatabase(diskdb ogdb.Database) *Database {
+func NewDatabase(diskdb ogdb.Database) *Database {
 	return &Database{
 		diskdb: diskdb,
 		nodes: map[ogTypes.HashKey]*cachedNode{

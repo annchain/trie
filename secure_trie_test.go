@@ -17,41 +17,37 @@
 package trie
 
 import (
-	"bytes"
-	"github.com/annchain/OG/arefactor/og/types"
-	ogcrypto2 "github.com/annchain/OG/deprecated/ogcrypto"
 	"runtime"
 	"sync"
 	"testing"
 
-	"github.com/annchain/OG/common"
-	"github.com/annchain/OG/ogdb"
-	// "github.com/ethereum/go-ethereum/common"
-	// "github.com/ethereum/go-ethereum/ogcrypto"
-	// "github.com/ethereum/go-ethereum/ethdb"
+	ogcrypto2 "github.com/annchain/OG/deprecated/ogcrypto"
+	ogTypes "github.com/annchain/OG/og_interface"
+	"github.com/annchain/commongo/bytes"
+	"github.com/annchain/ogdb/memdb"
 )
 
 func newEmptySecure() *SecureTrie {
-	trie, _ := NewSecure(types.Hash{}, NewDatabase(ogdb.NewMemDatabase()), 0)
+	trie, _ := NewSecure(&ogTypes.Hash32{}, NewDatabase(memdb.NewMemDatabase()), 0)
 	return trie
 }
 
 // makeTestSecureTrie creates a large enough secure trie for testing.
 func makeTestSecureTrie() (*Database, *SecureTrie, map[string][]byte) {
 	// Create an empty trie
-	triedb := NewDatabase(ogdb.NewMemDatabase())
+	triedb := NewDatabase(memdb.NewMemDatabase())
 
-	trie, _ := NewSecure(types.Hash{}, triedb, 0)
+	trie, _ := NewSecure(&ogTypes.Hash32{}, triedb, 0)
 
 	// Fill it with some arbitrary data
 	content := make(map[string][]byte)
 	for i := byte(0); i < 255; i++ {
 		// Map the same data under multiple keys
-		key, val := common.LeftPadBytes([]byte{1, i}, 32), []byte{i}
+		key, val := bytes.LeftPadBytes([]byte{1, i}, 32), []byte{i}
 		content[string(key)] = val
 		trie.Update(key, val)
 
-		key, val = common.LeftPadBytes([]byte{2, i}, 32), []byte{i}
+		key, val = bytes.LeftPadBytes([]byte{2, i}, 32), []byte{i}
 		content[string(key)] = val
 		trie.Update(key, val)
 
@@ -88,7 +84,7 @@ func TestSecureDelete(t *testing.T) {
 		}
 	}
 	hash := trie.Hash()
-	exp := types.HexToHash("29b235a58c3c25ab83010c327d5932bcf05324b7d6b1185e650798034783ca9d")
+	exp := ogTypes.HashKeyToHash("29b235a58c3c25ab83010c327d5932bcf05324b7d6b1185e650798034783ca9d")
 	if hash != exp {
 		t.Errorf("expected %x got %x", exp, hash)
 	}
@@ -102,10 +98,10 @@ func TestSecureGetKey(t *testing.T) {
 	value := []byte("bar")
 	seckey := ogcrypto2.Keccak256(key)
 
-	if !bytes.Equal(trie.Get(key), value) {
+	if !bytes.IsSameBytes(trie.Get(key), value) {
 		t.Errorf("Get did not return bar")
 	}
-	if k := trie.GetKey(seckey); !bytes.Equal(k, key) {
+	if k := trie.GetKey(seckey); !bytes.IsSameBytes(k, key) {
 		t.Errorf("GetKey returned %q, want %q", k, key)
 	}
 }

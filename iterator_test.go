@@ -17,16 +17,15 @@
 package trie
 
 import (
-	"bytes"
+	//"bytes"
 	"fmt"
-	"github.com/annchain/OG/arefactor/og/types"
+	ogTypes "github.com/annchain/OG/og_interface"
 	"math/rand"
 	"testing"
 
 	"github.com/annchain/OG/common"
-	"github.com/annchain/OG/ogdb"
-	// "github.com/annchain/OG/common"
-	// ethdb "github.com/annchain/OG/ogdb"
+	"github.com/annchain/ogdb/memdb"
+	"github.com/annchain/commongo/bytes"
 )
 
 func TestIterator(t *testing.T) {
@@ -104,27 +103,27 @@ func TestNodeIteratorCoverage(t *testing.T) {
 	db, trie, _ := makeTestTrie()
 
 	// Gather all the node hashes found by the iterator
-	hashes := make(map[types.Hash]struct{})
+	hashes := make(map[ogTypes.HashKey]ogTypes.Hash)
 	for it := trie.NodeIterator(nil); it.Next(true); {
-		if it.Hash() != (types.Hash{}) {
-			hashes[it.Hash()] = struct{}{}
+		if it.Hash().HashKey() != (ogTypes.Hash32{}.HashKey()) {
+			hashes[it.Hash().HashKey()] = it.Hash()
 		}
 	}
 	// Cross check the hashes and the database itself
-	for hash := range hashes {
+	for _, hash := range hashes {
 		if _, err := db.Node(hash); err != nil {
 			t.Errorf("failed to retrieve reported node %x: %v", hash, err)
 		}
 	}
-	for hash, obj := range db.nodes {
-		if obj != nil && hash != (types.Hash{}) {
-			if _, ok := hashes[hash]; !ok {
-				t.Errorf("state entry not reported %x", hash)
+	for hashKey, obj := range db.nodes {
+		if obj != nil && hashKey != (ogTypes.Hash32{}.HashKey()) {
+			if _, ok := hashes[hashKey]; !ok {
+				t.Errorf("state entry not reported %s", hashKey)
 			}
 		}
 	}
-	for _, key := range db.diskdb.(*ogdb.MemDatabase).Keys() {
-		if _, ok := hashes[types.BytesToHash(key)]; !ok {
+	for _, key := range db.diskdb.(*memdb.MemDatabase).Keys() {
+		if _, ok := hashes[ogTypes.BytesToHash(key).HashKey()]; !ok {
 			t.Errorf("state entry not reported %x", key)
 		}
 	}
@@ -185,7 +184,7 @@ func checkIteratorOrder(want []kvs, it *Iterator) error {
 		if len(want) == 0 {
 			return fmt.Errorf("didn't expect any more values, got key %q", it.Key)
 		}
-		if !bytes.Equal(it.Key, []byte(want[0].k)) {
+		if !bytes.IsSameBytes(it.Key, []byte(want[0].k)) {
 			return fmt.Errorf("wrong key: got %q, want %q", it.Key, want[0].k)
 		}
 		want = want[1:]
@@ -292,10 +291,10 @@ func TestIteratorContinueAfterErrorDisk(t *testing.T)    { testIteratorContinueA
 func TestIteratorContinueAfterErrorMemonly(t *testing.T) { testIteratorContinueAfterError(t, true) }
 
 func testIteratorContinueAfterError(t *testing.T, memonly bool) {
-	diskdb := ogdb.NewMemDatabase()
+	diskdb := memdb.NewMemDatabase()
 	triedb := NewDatabase(diskdb)
 
-	tr, _ := New(types.Hash{}, triedb)
+	tr, _ := New(&ogTypes.Hash32{}, triedb)
 	for _, val := range testdata1 {
 		tr.Update([]byte(val.k), []byte(val.v))
 	}
@@ -307,7 +306,7 @@ func testIteratorContinueAfterError(t *testing.T, memonly bool) {
 
 	var (
 		diskKeys [][]byte
-		memKeys  types.Hashes
+		memKeys  []ogTypes.Hash
 	)
 	if memonly {
 		memKeys = triedb.Nodes()
@@ -321,7 +320,7 @@ func testIteratorContinueAfterError(t *testing.T, memonly bool) {
 		// Remove a random node from the database. It can't be the root node
 		// because that one is already loaded.
 		var (
-			rkey types.Hash
+			rkey ogTypes.Hash
 			rval []byte
 			robj *cachedNode
 		)
@@ -329,18 +328,18 @@ func testIteratorContinueAfterError(t *testing.T, memonly bool) {
 			if memonly {
 				rkey = memKeys[rand.Intn(len(memKeys))]
 			} else {
-				copy(rkey.ToBytes(), diskKeys[rand.Intn(len(diskKeys))])
+				copy(rkey.Bytes(), diskKeys[rand.Intn(len(diskKeys))])
 			}
 			if rkey != tr.Hash() {
 				break
 			}
 		}
 		if memonly {
-			robj = triedb.nodes[rkey]
-			delete(triedb.nodes, rkey)
+			robj = triedb.nodes[rkey.HashKey()]
+			delete(triedb.nodes, rkey.HashKey())
 		} else {
-			rval, _ = diskdb.Get(rkey.ToBytes())
-			diskdb.Delete(rkey.ToBytes())
+			rval, _ = diskdb.Get(rkey.Bytes())
+			diskdb.Delete(rkey.Bytes())
 		}
 		// Iterate until the error is hit.
 		seen := make(map[string]bool)
@@ -353,9 +352,9 @@ func testIteratorContinueAfterError(t *testing.T, memonly bool) {
 
 		// Add the node back and continue iteration.
 		if memonly {
-			triedb.nodes[rkey] = robj
+			triedb.nodes[rkey.HashKey()] = robj
 		} else {
-			diskdb.Put(rkey.ToBytes(), rval)
+			diskdb.Put(rkey.Bytes(), rval)
 		}
 		checkIteratorNoDups(t, it, seen)
 		if it.Error() != nil {
@@ -379,10 +378,10 @@ func TestIteratorContinueAfterSeekErrorMemonly(t *testing.T) {
 
 func testIteratorContinueAfterSeekError(t *testing.T, memonly bool) {
 	// Commit test trie to db, then remove the node containing "bars".
-	diskdb := ogdb.NewMemDatabase()
+	diskdb := memdb.NewMemDatabase()
 	triedb := NewDatabase(diskdb)
 
-	ctr, _ := New(types.Hash{}, triedb)
+	ctr, _ := New(&ogTypes.Hash32{}, triedb)
 	for _, val := range testdata1 {
 		ctr.Update([]byte(val.k), []byte(val.v))
 	}
@@ -390,17 +389,18 @@ func testIteratorContinueAfterSeekError(t *testing.T, memonly bool) {
 	if !memonly {
 		triedb.Commit(root, true)
 	}
-	barNodeHash := types.HexToHash("05041990364eb72fcb1127652ce40d8bab765f2bfe53225b1170d276cc101c2e")
+	barNodeHashBytes, _ := bytes.FromHex("05041990364eb72fcb1127652ce40d8bab765f2bfe53225b1170d276cc101c2e")
+	barNodeHash := ogTypes.BytesToHash(barNodeHashBytes)
 	var (
 		barNodeBlob []byte
 		barNodeObj  *cachedNode
 	)
 	if memonly {
-		barNodeObj = triedb.nodes[barNodeHash]
-		delete(triedb.nodes, barNodeHash)
+		barNodeObj = triedb.nodes[barNodeHash.HashKey()]
+		delete(triedb.nodes, barNodeHash.HashKey())
 	} else {
-		barNodeBlob, _ = diskdb.Get(barNodeHash.ToBytes())
-		diskdb.Delete(barNodeHash.ToBytes())
+		barNodeBlob, _ = diskdb.Get(barNodeHash.Bytes())
+		diskdb.Delete(barNodeHash.Bytes())
 	}
 	// Create a new iterator that seeks to "bars". Seeking can't proceed because
 	// the node is missing.
@@ -414,9 +414,9 @@ func testIteratorContinueAfterSeekError(t *testing.T, memonly bool) {
 	}
 	// Reinsert the missing node.
 	if memonly {
-		triedb.nodes[barNodeHash] = barNodeObj
+		triedb.nodes[barNodeHash.HashKey()] = barNodeObj
 	} else {
-		diskdb.Put(barNodeHash.ToBytes(), barNodeBlob)
+		diskdb.Put(barNodeHash.Bytes(), barNodeBlob)
 	}
 	// Check that iteration produces the right set of values.
 	if err := checkIteratorOrder(testdata1[2:], NewIterator(it)); err != nil {
