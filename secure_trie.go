@@ -22,8 +22,6 @@ import (
 
 	"github.com/annchain/OG/arefactor/common"
 	log "github.com/sirupsen/logrus"
-	// "github.com/ethereum/go-ethereum/common"
-	// "github.com/ethereum/go-ethereum/log"
 )
 
 // SecureTrie wraps a trie with key hashing. In a secure trie, all
@@ -54,7 +52,7 @@ type SecureTrie struct {
 // Loaded nodes are kept around until their 'cache generation' expires.
 // A new cache generation is created by each call to Commit.
 // cachelimit sets the number of past cache generations to keep.
-func NewSecure(root ogTypes.Hash, db *TrieDatabase, cachelimit uint16) (*SecureTrie, error) {
+func NewSecure(root ogTypes.Hash, db *Database, cachelimit uint16) (*SecureTrie, error) {
 	if db == nil {
 		panic("trie.NewSecure called without a database")
 	}
@@ -145,7 +143,7 @@ func (t *SecureTrie) GetKey(shaKey []byte) []byte {
 //
 // Committing flushes nodes from memory. Subsequent Get calls will load nodes
 // from the database.
-func (t *SecureTrie) Commit(onleaf LeafCallback, preCommit bool) (root ogTypes.Hash, err error) {
+func (t *SecureTrie) Commit(onleaf LeafCallback) (root ogTypes.Hash, err error) {
 	// Write all the pre-images to the actual disk database
 	if len(t.getSecKeyCache()) > 0 {
 		t.trie.db.lock.Lock()
@@ -157,7 +155,7 @@ func (t *SecureTrie) Commit(onleaf LeafCallback, preCommit bool) (root ogTypes.H
 		t.secKeyCache = make(map[string][]byte)
 	}
 	// Commit the trie to its intermediate node database
-	return t.trie.Commit(onleaf, preCommit)
+	return t.trie.Commit(onleaf)
 }
 
 // Hash returns the root hash of SecureTrie. It does not write to the

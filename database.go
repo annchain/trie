@@ -62,7 +62,7 @@ type DatabaseReader interface {
 // Database is an intermediate write layer between the trie data structures and
 // the disk database. The aim is to accumulate trie writes in-memory and only
 // periodically flush a couple tries to disk, garbage collecting the remainder.
-type TrieDatabase struct {
+type Database struct {
 	diskdb ogdb.Database // Persistent storage for matured trie nodes
 
 	nodes  map[ogTypes.HashKey]*cachedNode // Data and references relationships of a node
@@ -99,8 +99,8 @@ type cachedNode struct {
 
 // NewDatabase creates a new trie database to store ephemeral trie content before
 // its written out to disk or garbage collected.
-func NewTrieDatabase(diskdb ogdb.Database) *TrieDatabase {
-	return &TrieDatabase{
+func NewTrieDatabase(diskdb ogdb.Database) *Database {
+	return &Database{
 		diskdb: diskdb,
 		nodes: map[ogTypes.HashKey]*cachedNode{
 			EmptyHash.HashKey(): {children: make(map[ogTypes.HashKey]int)},
@@ -110,13 +110,13 @@ func NewTrieDatabase(diskdb ogdb.Database) *TrieDatabase {
 }
 
 // DiskDB retrieves the persistent storage backing the trie database.
-func (db *TrieDatabase) DiskDB() DatabaseReader {
+func (db *Database) DiskDB() DatabaseReader {
 	return db.diskdb
 }
 
 // Insert writes a new trie node to the memory database if it's yet unknown. The
 // method will make a copy of the slice.
-func (db *TrieDatabase) Insert(hash ogTypes.Hash, blob []byte) {
+func (db *Database) Insert(hash ogTypes.Hash, blob []byte) {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
@@ -124,7 +124,7 @@ func (db *TrieDatabase) Insert(hash ogTypes.Hash, blob []byte) {
 }
 
 // insert is the private locked version of Insert.
-func (db *TrieDatabase) insert(hash ogTypes.Hash, blob []byte) {
+func (db *Database) insert(hash ogTypes.Hash, blob []byte) {
 	// If the node's already cached, skip
 	if _, ok := db.nodes[hash.HashKey()]; ok {
 		return
@@ -149,7 +149,7 @@ func (db *TrieDatabase) insert(hash ogTypes.Hash, blob []byte) {
 // yet unknown. The method will make a copy of the slice.
 //
 // Note, this method assumes that the database's lock is held!
-func (db *TrieDatabase) insertPreimage(hash ogTypes.Hash, preimage []byte) {
+func (db *Database) insertPreimage(hash ogTypes.Hash, preimage []byte) {
 	if _, ok := db.preimages[hash.HashKey()]; ok {
 		return
 	}
@@ -159,7 +159,7 @@ func (db *TrieDatabase) insertPreimage(hash ogTypes.Hash, preimage []byte) {
 
 // Node retrieves a cached trie node from memory. If it cannot be found cached,
 // the method queries the persistent database for the content.
-func (db *TrieDatabase) Node(hash ogTypes.Hash) ([]byte, error) {
+func (db *Database) Node(hash ogTypes.Hash) ([]byte, error) {
 	// Retrieve the node from cache if available
 	db.lock.RLock()
 	node := db.nodes[hash.HashKey()]
@@ -174,7 +174,7 @@ func (db *TrieDatabase) Node(hash ogTypes.Hash) ([]byte, error) {
 
 // preimage retrieves a cached trie node pre-image from memory. If it cannot be
 // found cached, the method queries the persistent database for the content.
-func (db *TrieDatabase) preimage(hash ogTypes.Hash) ([]byte, error) {
+func (db *Database) preimage(hash ogTypes.Hash) ([]byte, error) {
 	// Retrieve the node from cache if available
 	db.lock.RLock()
 	preimage := db.preimages[hash.HashKey()]
@@ -190,7 +190,7 @@ func (db *TrieDatabase) preimage(hash ogTypes.Hash) ([]byte, error) {
 // secureKey returns the database key for the preimage of key, as an ephemeral
 // buffer. The caller must not hold onto the return value because it will become
 // invalid on the next call.
-func (db *TrieDatabase) secureKey(key []byte) []byte {
+func (db *Database) secureKey(key []byte) []byte {
 	buf := append(db.seckeybuf[:0], secureKeyPrefix...)
 	buf = append(buf, key...)
 	return buf
@@ -199,7 +199,7 @@ func (db *TrieDatabase) secureKey(key []byte) []byte {
 // Nodes retrieves the hashes of all the nodes cached within the memory database.
 // This method is extremely expensive and should only be used to validate internal
 // states in test code.
-func (db *TrieDatabase) Nodes() []ogTypes.Hash {
+func (db *Database) Nodes() []ogTypes.Hash {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
@@ -213,7 +213,7 @@ func (db *TrieDatabase) Nodes() []ogTypes.Hash {
 }
 
 // Reference adds a new reference from a parent node to a child node.
-func (db *TrieDatabase) Reference(child ogTypes.Hash, parent ogTypes.Hash) {
+func (db *Database) Reference(child ogTypes.Hash, parent ogTypes.Hash) {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
@@ -221,7 +221,7 @@ func (db *TrieDatabase) Reference(child ogTypes.Hash, parent ogTypes.Hash) {
 }
 
 // reference is the private locked version of Reference.
-func (db *TrieDatabase) reference(child ogTypes.Hash, parent ogTypes.Hash) {
+func (db *Database) reference(child ogTypes.Hash, parent ogTypes.Hash) {
 	// If the node does not exist, it's a node pulled from disk, skip
 	node, ok := db.nodes[child.HashKey()]
 	if !ok {
@@ -236,7 +236,7 @@ func (db *TrieDatabase) reference(child ogTypes.Hash, parent ogTypes.Hash) {
 }
 
 // Dereference removes an existing reference from a parent node to a child node.
-func (db *TrieDatabase) Dereference(child ogTypes.Hash, parent ogTypes.Hash) {
+func (db *Database) Dereference(child ogTypes.Hash, parent ogTypes.Hash) {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
@@ -256,7 +256,7 @@ func (db *TrieDatabase) Dereference(child ogTypes.Hash, parent ogTypes.Hash) {
 }
 
 // dereference is the private locked version of Dereference.
-func (db *TrieDatabase) dereference(childKey ogTypes.HashKey, parentKey ogTypes.HashKey) {
+func (db *Database) dereference(childKey ogTypes.HashKey, parentKey ogTypes.HashKey) {
 	// Dereference the parent-child
 	node := db.nodes[parentKey]
 
@@ -290,7 +290,7 @@ func (db *TrieDatabase) dereference(childKey ogTypes.HashKey, parentKey ogTypes.
 
 // Cap iteratively flushes old but still referenced trie nodes until the total
 // memory usage goes below the given threshold.
-func (db *TrieDatabase) Cap(limit utils.StorageSize) error {
+func (db *Database) Cap(limit utils.StorageSize) error {
 	// Create a database batch to flush persistent data out. It is important that
 	// outside code doesn't see an inconsistent state (referenced data removed from
 	// memory cache during commit but not yet in persistent storage). This is ensured
@@ -397,7 +397,7 @@ func (db *TrieDatabase) Cap(limit utils.StorageSize) error {
 // to disk, forcefully tearing down all references in both directions.
 //
 // As a side effect, all pre-images accumulated up to this point are also written.
-func (db *TrieDatabase) Commit(node ogTypes.Hash, report bool) error {
+func (db *Database) Commit(node ogTypes.Hash, report bool) error {
 	// Create a database batch to flush persistent data out. It is important that
 	// outside code doesn't see an inconsistent state (referenced data removed from
 	// memory cache during commit but not yet in persistent storage). This is ensured
@@ -464,7 +464,7 @@ func (db *TrieDatabase) Commit(node ogTypes.Hash, report bool) error {
 }
 
 // commit is the private locked version of Commit.
-func (db *TrieDatabase) commit(hashKey ogTypes.HashKey, batch ogdb.Batch) error {
+func (db *Database) commit(hashKey ogTypes.HashKey, batch ogdb.Batch) error {
 	// If the node does not exist, it's a previously committed node
 	node, ok := db.nodes[hashKey]
 	if !ok {
@@ -492,7 +492,7 @@ func (db *TrieDatabase) commit(hashKey ogTypes.HashKey, batch ogdb.Batch) error 
 // persisted trie is removed from the cache. The reason behind the two-phase
 // commit is to ensure consistent data availability while moving from memory
 // to disk.
-func (db *TrieDatabase) uncache(hashKey ogTypes.HashKey) {
+func (db *Database) uncache(hashKey ogTypes.HashKey) {
 
 	//log.Tracef("Panic debug, uncache the node: %x, cur db.oldest: %x", hash.KeyBytes, db.oldest.KeyBytes)
 	// If the node does not exist, we're done on this path
@@ -519,7 +519,7 @@ func (db *TrieDatabase) uncache(hashKey ogTypes.HashKey) {
 
 // Size returns the current storage size of the memory cache in front of the
 // persistent database layer.
-func (db *TrieDatabase) Size() (utils.StorageSize, utils.StorageSize) {
+func (db *Database) Size() (utils.StorageSize, utils.StorageSize) {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 

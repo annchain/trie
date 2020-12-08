@@ -20,15 +20,17 @@ package trie
 import (
 	"bytes"
 	"fmt"
-	"github.com/annchain/OG/arefactor/og/types"
 	ogcrypto2 "github.com/annchain/OG/deprecated/ogcrypto"
 	"github.com/annchain/OG/metrics"
+	ogTypes "github.com/annchain/OG/og_interface"
+	"github.com/annchain/commongo/hexutil"
 	log "github.com/sirupsen/logrus"
 )
 
 var (
 	// emptyRoot is the known root hash of an empty trie.
-	emptyRoot = types.HexToHashNoError("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
+	emptyRootPtr = ogTypes.BytesToHash32(hexutil.FromHexNoError("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"))
+	emptyRoot = *emptyRootPtr
 
 	// emptyState is the known hash of an empty state trie entry.
 	emptyState = ogcrypto2.Keccak256Hash(nil)
@@ -56,7 +58,7 @@ func CacheUnloads() int64 {
 // LeafCallback is a callback type invoked when a trie operation reaches a leaf
 // node. It's used by state sync and commit to allow handling external references
 // between account and storage tries.
-type LeafCallback func(leaf []byte, parent types.Hash) error
+type LeafCallback func(leaf []byte, parent ogTypes.Hash32) error
 
 // Trie is a Merkle Patricia Trie.
 // The zero value is an empty trie with no database.
@@ -66,7 +68,7 @@ type LeafCallback func(leaf []byte, parent types.Hash) error
 type Trie struct {
 	db           *Database
 	root         Node
-	originalRoot types.Hash
+	originalRoot ogTypes.Hash32
 
 	// Cache generation values.
 	// cachegen increases by one with each commit operation.
@@ -92,7 +94,7 @@ func (t *Trie) newFlag() nodeFlag {
 // trie is initially empty and does not require a database. Otherwise,
 // New will panic if db is nil and returns a MissingNodeError if root does
 // not exist in the database. Accessing the trie loads nodes from db on demand.
-func New(root types.Hash, db *TrieDatabase) (*Trie, error) {
+func New(root ogTypes.Hash32, db *Database) (*Trie, error) {
 	if db == nil {
 		panic("trie.New called without a database")
 	}
@@ -100,8 +102,8 @@ func New(root types.Hash, db *TrieDatabase) (*Trie, error) {
 		db:           db,
 		originalRoot: root,
 	}
-	if root != (types.Hash{}) && root != emptyRoot {
-		rootnode, err := trie.resolveHash(root.ToBytes(), nil)
+	if root != (ogTypes.Hash32{}) && root != emptyRoot {
+		rootnode, err := trie.resolveHash(root.Bytes(), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -440,7 +442,7 @@ func (t *Trie) resolve(n Node, prefix []byte) (Node, error) {
 func (t *Trie) resolveHash(n HashNode, prefix []byte) (Node, error) {
 	cacheMissCounter.Inc(1)
 
-	hash := types.BytesToHash(n)
+	hash := ogTypes.BytesToHash(n)
 
 	enc, err := t.db.Node(hash)
 	if err != nil || enc == nil {
@@ -451,36 +453,36 @@ func (t *Trie) resolveHash(n HashNode, prefix []byte) (Node, error) {
 
 // Root returns the root hash of the trie.
 // Deprecated: use Hash instead.
-func (t *Trie) Root() []byte { return t.Hash().ToBytes() }
+func (t *Trie) Root() []byte { return t.Hash().Bytes() }
 
 // Hash returns the root hash of the trie. It does not write to the
 // database and can be used even if the trie doesn't have one.
-func (t *Trie) Hash() types.Hash {
-	hash, cached, _ := t.hashRoot(nil, nil, false)
+func (t *Trie) Hash() ogTypes.Hash {
+	hash, cached, _ := t.hashRoot(nil, nil)
 	t.root = cached
-	return types.BytesToHash(hash.(HashNode))
+	return ogTypes.BytesToHash(hash.(HashNode))
 }
 
 // Commit writes all nodes to the trie's memory database, tracking the internal
 // and external (for account tries) references.
-func (t *Trie) Commit(onleaf LeafCallback, preCommit bool) (root types.Hash, err error) {
+func (t *Trie) Commit(onleaf LeafCallback) (root ogTypes.Hash, err error) {
 	if t.db == nil {
 		panic("commit called on trie with nil database")
 	}
-	hash, cached, err := t.hashRoot(t.db, onleaf, preCommit)
+	hash, cached, err := t.hashRoot(t.db, onleaf)
 	if err != nil {
-		return types.Hash{}, err
+		return &ogTypes.Hash32{}, err
 	}
 	t.root = cached
 	t.cachegen++
-	return types.BytesToHash(hash.(HashNode)), nil
+	return ogTypes.BytesToHash(hash.(HashNode)), nil
 }
 
-func (t *Trie) hashRoot(db *Database, onleaf LeafCallback, preHash bool) (Node, Node, error) {
+func (t *Trie) hashRoot(db *Database, onleaf LeafCallback) (Node, Node, error) {
 	if t.root == nil {
-		return HashNode(emptyRoot.ToBytes()), nil, nil
+		return HashNode(emptyRoot.Bytes()), nil, nil
 	}
 	h := newHasher(t.cachegen, t.cachelimit, onleaf)
 	defer returnHasherToPool(h)
-	return h.hash(t.root, db, true, preHash)
+	return h.hash(t.root, db, true)
 }
