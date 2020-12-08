@@ -20,7 +20,7 @@ import (
 	"fmt"
 	ogTypes "github.com/annchain/OG/og_interface"
 
-	"github.com/annchain/OG/arefactor/common"
+	"github.com/annchain/commongo/bytes"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -109,7 +109,7 @@ func (t *SecureTrie) TryUpdate(key, value []byte) error {
 	if err != nil {
 		return err
 	}
-	t.getSecKeyCache()[string(hk)] = common.CopyBytes(key)
+	t.getSecKeyCache()[string(hk)] = bytes.CopyBytes(key)
 	return nil
 }
 

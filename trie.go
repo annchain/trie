@@ -58,7 +58,7 @@ func CacheUnloads() int64 {
 // LeafCallback is a callback type invoked when a trie operation reaches a leaf
 // node. It's used by state sync and commit to allow handling external references
 // between account and storage tries.
-type LeafCallback func(leaf []byte, parent ogTypes.Hash32) error
+type LeafCallback func(leaf []byte, parent ogTypes.Hash) error
 
 // Trie is a Merkle Patricia Trie.
 // The zero value is an empty trie with no database.
@@ -68,7 +68,7 @@ type LeafCallback func(leaf []byte, parent ogTypes.Hash32) error
 type Trie struct {
 	db           *Database
 	root         Node
-	originalRoot ogTypes.Hash32
+	originalRoot ogTypes.Hash
 
 	// Cache generation values.
 	// cachegen increases by one with each commit operation.
@@ -94,7 +94,7 @@ func (t *Trie) newFlag() nodeFlag {
 // trie is initially empty and does not require a database. Otherwise,
 // New will panic if db is nil and returns a MissingNodeError if root does
 // not exist in the database. Accessing the trie loads nodes from db on demand.
-func New(root ogTypes.Hash32, db *Database) (*Trie, error) {
+func New(root ogTypes.Hash, db *Database) (*Trie, error) {
 	if db == nil {
 		panic("trie.New called without a database")
 	}
@@ -102,7 +102,7 @@ func New(root ogTypes.Hash32, db *Database) (*Trie, error) {
 		db:           db,
 		originalRoot: root,
 	}
-	if root != (ogTypes.Hash32{}) && root != emptyRoot {
+	if root.HashKey() != (ogTypes.Hash32{}.HashKey()) && root.HashKey() != emptyRoot.HashKey() {
 		rootnode, err := trie.resolveHash(root.Bytes(), nil)
 		if err != nil {
 			return nil, err

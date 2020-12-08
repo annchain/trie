@@ -21,7 +21,6 @@ import (
 	"fmt"
 	ogTypes "github.com/annchain/OG/og_interface"
 	"github.com/annchain/OG/ogdb"
-	"github.com/annchain/OG/vm/types"
 	"gopkg.in/karalabe/cookiejar.v2/collections/prque"
 )
 
@@ -35,7 +34,7 @@ var ErrAlreadyProcessed = errors.New("already processed")
 
 // request represents a scheduled or already in-flight state retrieval request.
 type request struct {
-	hash ogTypes.Hash32 // Hash of the node data content to retrieve
+	hash ogTypes.Hash // Hash of the node data content to retrieve
 	data []byte     // Data content of the node, cached until all subtrees complete
 	raw  bool       // Whether this is a raw entry (code) or a trie node
 
@@ -49,22 +48,22 @@ type request struct {
 // SyncResult is a simple list to return missing nodes along with their request
 // hashes.
 type SyncResult struct {
-	Hash ogTypes.Hash32 // Hash of the originally unknown trie node
+	Hash ogTypes.Hash // Hash of the originally unknown trie node
 	Data []byte     // Data content of the retrieved node
 }
 
 // syncMemBatch is an in-memory buffer of successfully downloaded but not yet
 // persisted data items.
 type syncMemBatch struct {
-	batch map[ogTypes.Hash32][]byte // In-memory membatch of recently completed items
-	order []ogTypes.Hash32         // Order of completion to prevent out-of-order data loss
+	batch map[ogTypes.HashKey][]byte // In-memory membatch of recently completed items
+	order []ogTypes.Hash         // Order of completion to prevent out-of-order data loss
 }
 
 // newSyncMemBatch allocates a new memory-buffer for not-yet persisted trie nodes.
 func newSyncMemBatch() *syncMemBatch {
 	return &syncMemBatch{
-		batch: make(map[ogTypes.Hash32][]byte),
-		order: make([]ogTypes.Hash32, 0, 256),
+		batch: make(map[ogTypes.HashKey][]byte),
+		order: make([]ogTypes.Hash, 0, 256),
 	}
 }
 
@@ -74,32 +73,32 @@ func newSyncMemBatch() *syncMemBatch {
 type Sync struct {
 	database DatabaseReader          // Persistent database to check for existing entries
 	membatch *syncMemBatch           // Memory buffer to avoid frequest database writes
-	requests map[ogTypes.Hash32]*request // Pending requests pertaining to a key hash
+	requests map[ogTypes.HashKey]*request // Pending requests pertaining to a key hash
 	queue    *prque.Prque            // Priority queue with the pending requests
 }
 
 // NewSync creates a new trie data download scheduler.
-func NewSync(root ogTypes.Hash32, database DatabaseReader, callback LeafCallback) *Sync {
+func NewSync(root ogTypes.Hash, database DatabaseReader, callback LeafCallback) *Sync {
 	ts := &Sync{
 		database: database,
 		membatch: newSyncMemBatch(),
-		requests: make(map[ogTypes.Hash32]*request),
+		requests: make(map[ogTypes.HashKey]*request),
 		queue:    prque.New(),
 	}
-	ts.AddSubTrie(root, 0, ogTypes.Hash32{}, callback)
+	ts.AddSubTrie(root, 0, &ogTypes.Hash32{}, callback)
 	return ts
 }
 
 // AddSubTrie registers a new trie to the sync code, rooted at the designated parent.
-func (s *Sync) AddSubTrie(root ogTypes.Hash32, depth int, parent ogTypes.Hash32, callback LeafCallback) {
+func (s *Sync) AddSubTrie(root ogTypes.Hash, depth int, parent ogTypes.Hash, callback LeafCallback) {
 	// Short circuit if the trie is empty or already known
-	if root == emptyRoot {
+	if root.HashKey() == emptyRoot.HashKey() {
 		return
 	}
-	if _, ok := s.membatch.batch[root]; ok {
+	if _, ok := s.membatch.batch[root.HashKey()]; ok {
 		return
 	}
-	key := root.ToBytes()
+	key := root.Bytes()
 	blob, _ := s.database.Get(key)
 	if local, err := decodeNode(key, blob, 0); local != nil && err == nil {
 		return
@@ -111,10 +110,10 @@ func (s *Sync) AddSubTrie(root ogTypes.Hash32, depth int, parent ogTypes.Hash32,
 		callback: callback,
 	}
 	// If this sub-trie has a designated parent, link them together
-	if parent != (ogTypes.Hash32{}) {
-		ancestor := s.requests[parent]
+	if parent.HashKey() != (ogTypes.Hash32{}.HashKey()) {
+		ancestor := s.requests[parent.HashKey()]
 		if ancestor == nil {
-			panic(fmt.Sprintf("sub-trie ancestor not found: %x", parent))
+			panic(fmt.Sprintf("sub-trie ancestor not found: %s", parent.HashKey()))
 		}
 		ancestor.deps++
 		req.parents = append(req.parents, ancestor)
@@ -126,15 +125,15 @@ func (s *Sync) AddSubTrie(root ogTypes.Hash32, depth int, parent ogTypes.Hash32,
 // interpreted as a trie node, but rather accepted and stored into the database
 // as is. This method's goal is to support misc state metadata retrievals (e.g.
 // contract code).
-func (s *Sync) AddRawEntry(hash ogTypes.Hash32, depth int, parent ogTypes.Hash32) {
+func (s *Sync) AddRawEntry(hash ogTypes.Hash, depth int, parent ogTypes.Hash) {
 	// Short circuit if the entry is empty or already known
 	if hash == emptyState {
 		return
 	}
-	if _, ok := s.membatch.batch[hash]; ok {
+	if _, ok := s.membatch.batch[hash.HashKey()]; ok {
 		return
 	}
-	if ok, _ := s.database.Has(hash.ToBytes()); ok {
+	if ok, _ := s.database.Has(hash.Bytes()); ok {
 		return
 	}
 	// Assemble the new sub-trie sync request
@@ -144,10 +143,10 @@ func (s *Sync) AddRawEntry(hash ogTypes.Hash32, depth int, parent ogTypes.Hash32
 		depth: depth,
 	}
 	// If this sub-trie has a designated parent, link them together
-	if parent != (ogTypes.Hash32{}) {
-		ancestor := s.requests[parent]
+	if parent.HashKey() != (ogTypes.Hash32{}.HashKey()) {
+		ancestor := s.requests[parent.HashKey()]
 		if ancestor == nil {
-			panic(fmt.Sprintf("raw-entry ancestor not found: %x", parent))
+			panic(fmt.Sprintf("raw-entry ancestor not found: %s", parent.HashKey()))
 		}
 		ancestor.deps++
 		req.parents = append(req.parents, ancestor)
@@ -172,7 +171,7 @@ func (s *Sync) Process(results []SyncResult) (bool, int, error) {
 
 	for i, item := range results {
 		// If the item was not requested, bail out
-		request := s.requests[item.Hash]
+		request := s.requests[item.Hash.HashKey()]
 		if request == nil {
 			return committed, i, ErrNotRequested
 		}
@@ -216,7 +215,7 @@ func (s *Sync) Process(results []SyncResult) (bool, int, error) {
 func (s *Sync) Commit(dbw ogdb.Putter) (int, error) {
 	// Dump the membatch into a database dbw
 	for i, key := range s.membatch.order {
-		if err := dbw.Put(key.Bytes(), s.membatch.batch[key]); err != nil {
+		if err := dbw.Put(key.Bytes(), s.membatch.batch[key.HashKey()]); err != nil {
 			return i, err
 		}
 	}
@@ -237,13 +236,13 @@ func (s *Sync) Pending() int {
 // and only a parent reference added to the old one.
 func (s *Sync) schedule(req *request) {
 	// If we're already requesting this node, add a new reference and stop
-	if old, ok := s.requests[req.hash]; ok {
+	if old, ok := s.requests[req.hash.HashKey()]; ok {
 		old.parents = append(old.parents, req.parents...)
 		return
 	}
 	// Schedule the request for future retrieval
 	s.queue.Push(req.hash, float32(req.depth))
-	s.requests[req.hash] = req
+	s.requests[req.hash.HashKey()] = req
 }
 
 // children retrieves all the missing children of a state trie entry for future
@@ -288,9 +287,8 @@ func (s *Sync) children(req *request, object Node) ([]*request, error) {
 		// If the child references another node, resolve or schedule
 		if node, ok := (child.node).(HashNode); ok {
 			// Try to resolve the node from the local database
-			hashPtr := ogTypes.BytesToHash(node).(*ogTypes.Hash32)
-			hash := *hashPtr
-			if _, ok := s.membatch.batch[hash]; ok {
+			hash := ogTypes.BytesToHash(node).(*ogTypes.Hash32)
+			if _, ok := s.membatch.batch[hash.HashKey()]; ok {
 				continue
 			}
 			if ok, _ := s.database.Has(node); ok {
@@ -313,10 +311,10 @@ func (s *Sync) children(req *request, object Node) ([]*request, error) {
 // committed themselves.
 func (s *Sync) commit(req *request) (err error) {
 	// Write the node content to the membatch
-	s.membatch.batch[req.hash] = req.data
+	s.membatch.batch[req.hash.HashKey()] = req.data
 	s.membatch.order = append(s.membatch.order, req.hash)
 
-	delete(s.requests, req.hash)
+	delete(s.requests, req.hash.HashKey())
 
 	// Check all parents for completion
 	for _, parent := range req.parents {
